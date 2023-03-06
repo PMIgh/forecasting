@@ -1,0 +1,182 @@
+#include "pch.h"
+#include <iostream>
+#include <cstdlib>
+#include <fstream>
+#include <ctime>
+#include <Eigen>
+
+#define sizeD (p+1)*4
+
+const int N = 115;
+const int Nmax = 123;
+const int Tlag = 8;
+const int p = 5;
+
+using namespace std;
+using Eigen::JacobiSVD;
+using Eigen::MatrixXf;
+using Eigen::VectorXf;
+using Eigen::ComputeThinU;
+using Eigen::ComputeThinV;
+using Eigen::LeastSquaresConjugateGradient;
+
+void selection(double *buf, int memory[sizeD], int Ntemp, int number)
+{
+	double min = buf[0];
+	memory[number] = 0;
+	for (int i = 1; i < Ntemp - p - 1; i++)
+	{
+		if (min > buf[i])
+		{
+			bool errorB = 0;
+			for (int j = 0; j < sizeD; j++)
+				if (memory[j] == i)
+				{
+					errorB++;
+				}
+			if (!errorB)
+			{
+				min = buf[i];
+				memory[number] = i;
+			}
+		}
+	}
+}
+
+void choice(double NeiX[p][sizeD], double X[p][N - p + 1], int memory[sizeD], int Ntemp, double X2[p])
+{
+	double *buf = new double[Ntemp - p];
+	for (int i = 0; i < Ntemp - p; i++)
+	{
+		buf[i] = 0.0;
+	}
+
+	for (int j = Ntemp - p - 1; j >= 0; j--)
+	{
+		for (int i = 0; i < p; i++)
+		{
+			buf[j] += abs(X2[i] - X[i][j]) *  abs(X2[i] - X[i][j]);
+
+		}
+		buf[j] = sqrt(buf[j]);
+	}
+
+	for (int i = 0; i < sizeD; i++)
+		selection(buf, memory, Ntemp, i);
+
+	for (int j = 0; j < sizeD; j++)
+		for (int i = 0; i < p; i++)
+			NeiX[i][j] = X[i][memory[j]];
+}
+
+int main()
+{
+	setlocale(LC_ALL, "Russian");
+	ofstream foutMG("MG.txt");
+
+	cout << "Итерационный метод с пересчетом" << endl;
+
+	double MGmass[Nmax], massGen[N + Tlag];
+	int memory[sizeD], Ntemp = N;
+	string line;
+
+	ifstream in("table.txt"); //считываем значения временного ряда
+
+	if (in.is_open())
+		for (int i = 0; i < Nmax; i++)
+		{
+			getline(in, line);
+			MGmass[i] = stod(line);
+		}
+	in.close();
+
+	for (int i = 0; i < Nmax; i++)
+		foutMG << i << ' ' << MGmass[i] << endl;
+	foutMG.close();
+
+	for (int i = 0; i < N; i++)
+		massGen[i] = MGmass[i];
+
+	double min = 0, minDr;
+	int numb;
+
+	double X[p][N - p + 1];
+	for (int j = 0; j < N - p + 1; j++)
+		for (int i = p - 1; i >= 0; i--)
+			X[i][j] = massGen[(p - 1 - i) + j];
+
+	double valo = 0;
+
+	for (int g = 0; g < Tlag; g++)
+	{
+		for (int i = 0; i < sizeD; i++)
+			memory[i] = -1;
+
+		double NeiX[p][sizeD];
+		double X2[p];
+		for (int i = 0; i < p; i++)
+		{
+			X2[p - 1 - i] = massGen[N + g - i - 1];
+			
+		}
+
+		choice(NeiX, X, memory, N, X2);
+
+		MatrixXf m2(sizeD, p);
+		for (int i = 0; i < sizeD; i++)
+			for (int j = 0; j < p; j++)
+				m2(i, j) = NeiX[j][i];
+
+		VectorXf b1(sizeD), x1(p);
+		for (int i = 0; i < sizeD; i++)
+		{
+			b1(i) = X[0][memory[i] + 1];
+		}
+		
+		x1 = m2.bdcSvd(ComputeThinU | ComputeThinV).solve(b1);
+
+		VectorXf x2(p);
+		for (int l = 0; l < p; l++)
+			x2(l) = 0;
+
+		double B = 0;
+		double sumY = 0;
+		for (int i = 0; i < sizeD; i++)
+		{
+			for (int l = 0; l < p; l++)
+			{
+				x2(l) += X[l][memory[i]];
+			}
+			sumY += X[0][memory[i] + 1];
+		}
+		B = (sumY - x2.transpose()*x1) / sizeD;
+
+		for (int i = 0; i < p; i++)
+		{
+			x2(p - 1 - i) = massGen[Ntemp - p + i];
+		}
+
+		valo += (MGmass[N + g] - x2.transpose()*x1 - B)*(MGmass[N + g] - x2.transpose()*x1 - B);
+		if (min < abs(MGmass[Ntemp] - x2.transpose()*x1 - B))
+		{
+			min = abs(MGmass[Ntemp] - x2.transpose()*x1 - B);
+			numb = Ntemp;
+		}
+		massGen[Ntemp] = x2.transpose()*x1 + B;
+
+		Ntemp++;
+	}
+
+	cout << "Максимальная погрешность: " << min << endl;
+	cout << "Максимальная погрешность номер: " << numb << endl;
+	cout << "Максимальная погрешность в %: " << min / MGmass[numb] * 100 << endl; 
+	cout << "Волатильность: " << sqrt(valo) << endl;
+	ofstream foutLADirTEST("LADirTEST.txt");
+	for (int i = 0; i < N + Tlag; i++)
+	{
+		foutLADirTEST << i << ' ' << massGen[i] << endl;
+	}
+	foutLADirTEST.close();
+
+	return 0;
+}
